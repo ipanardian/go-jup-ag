@@ -34,7 +34,7 @@ type JupagImpl struct {
 }
 
 func NewJupag() Jupag {
-	timeout := 500 * time.Millisecond
+	timeout := 3000 * time.Millisecond
 	cl := httpclient.NewClient(
 		httpclient.WithHTTPTimeout(timeout),
 		httpclient.WithRetryCount(1),
