@@ -75,6 +75,8 @@ func (c *JupagImpl) request(method, endpoint string, params, body any) (*http.Re
 		return nil, err
 	}
 
+	req.Header.Set("Cache-Control", "no-cache")
+
 	return c.jupagImpl.Do(req)
 }
 
