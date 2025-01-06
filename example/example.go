@@ -2,7 +2,8 @@ package main
 
 import (
 	"fmt"
-	jupag "github.com/verzth/go-jup-ag"
+
+	jupag "github.com/ipanardian/go-jup-ag"
 )
 
 func main() {

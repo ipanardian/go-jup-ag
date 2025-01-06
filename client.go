@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/gojek/heimdall/v7"
-	"github.com/gojek/heimdall/v7/httpclient"
-	"github.com/verzth/go-jup-ag/utils"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/gojek/heimdall/v7"
+	"github.com/gojek/heimdall/v7/httpclient"
+	"github.com/verzth/go-jup-ag/utils"
 )
 
 type Jupag interface {
@@ -20,8 +21,6 @@ type Jupag interface {
 	Swap(params SwapParams) (string, error)
 	Price(params PriceParams) (PriceMap, error)
 	RoutesMap(onlyDirectRoutes bool) (IndexedRoutesMap, error)
-	BestSwap(params BestSwapParams) (string, error)
-	ExchangeRate(params ExchangeRateParams) (Rate, error)
 }
 
 type JupagImpl struct {
@@ -43,7 +42,7 @@ func NewJupag() Jupag {
 
 	return &JupagImpl{
 		jupagImpl:     cl,
-		apiUrl:        "https://price.jup.ag/v6",
+		apiUrl:        "https://quote-proxy.jup.ag",
 		quotePath:     "/quote",
 		swapPath:      "/swap",
 		pricePath:     "/price",
@@ -97,27 +96,24 @@ func (c *JupagImpl) parseResponse(resp *http.Response) (json.RawMessage, error) 
 }
 
 // Quote returns a quote for a given input mint, output mint and amount
-func (c *JupagImpl) Quote(params QuoteParams) (QuoteResponse, error) {
+func (c *JupagImpl) Quote(params QuoteParams) (quote QuoteResponse, err error) {
 	resp, err := c.request(http.MethodGet, fmt.Sprintf("%s%s", c.apiUrl, c.quotePath), params, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to make quote request: %w", err)
+		return
 	}
 
 	data, err := c.parseResponse(resp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse quote response: %w", err)
+		err = fmt.Errorf("failed to parse quote response: %w", err)
+		return
 	}
 
-	var quotes QuoteResponse
-	if err := json.Unmarshal(data, &quotes); err != nil {
-		return nil, fmt.Errorf("failed to parse quote response: %w", err)
+	if err = json.Unmarshal(data, &quote); err != nil {
+		err = fmt.Errorf("failed to parse quote response: %w", err)
+		return
 	}
 
-	if len(quotes) == 0 {
-		return nil, fmt.Errorf("no quotes returned")
-	}
-
-	return quotes, nil
+	return
 }
 
 // Swap returns swap base64 serialized transaction for a route.
@@ -175,82 +171,4 @@ func (c *JupagImpl) RoutesMap(onlyDirectRoutes bool) (IndexedRoutesMap, error) {
 	}
 
 	return routesMap, nil
-}
-
-// BestSwap returns the ebase64 encoded transaction for the best swap route
-// for a given input mint, output mint and amount.
-// Default swap mode: ExactOut, so the amount is the amount of output token.
-// Default wrap unwrap sol: true
-func (c *JupagImpl) BestSwap(params BestSwapParams) (string, error) {
-	if params.SwapMode == "" {
-		params.SwapMode = SwapModeExactIn
-	}
-	routes, err := c.Quote(QuoteParams{
-		InputMint:        params.InputMint,
-		OutputMint:       params.OutputMint,
-		Amount:           params.Amount,
-		FeeBps:           params.FeeAmount,
-		SwapMode:         params.SwapMode,
-		OnlyDirectRoutes: false,
-	})
-	if err != nil {
-		return "", err
-	}
-
-	route, err := routes.GetBestRoute()
-	if err != nil {
-		return "", err
-	}
-
-	swap, err := c.Swap(SwapParams{
-		Route:               route,
-		UserPublicKey:       params.UserPublicKey,
-		DestinationWallet:   params.DestinationPublicKey,
-		FeeAccount:          params.FeeAccount,
-		WrapUnwrapSol:       utils.Pointer(true),
-		AsLegacyTransaction: utils.Pointer(true),
-	})
-	if err != nil {
-		return "", err
-	}
-
-	return swap, nil
-}
-
-// ExchangeRate returns the exchange rate for a given input mint, output mint and amount.
-// Default swap mode: ExactOut, so the amount is the amount of output token.
-func (c *JupagImpl) ExchangeRate(params ExchangeRateParams) (Rate, error) {
-	result := Rate{
-		InputMint:  params.InputMint,
-		OutputMint: params.OutputMint,
-	}
-	routes, err := c.Quote(QuoteParams{
-		InputMint:        params.InputMint,
-		OutputMint:       params.OutputMint,
-		Amount:           params.Amount,
-		SwapMode:         params.SwapMode,
-		OnlyDirectRoutes: false,
-	})
-	if err != nil {
-		return result, err
-	}
-
-	route, err := routes.GetBestRoute()
-	if err != nil {
-		return result, err
-	}
-
-	inAmount, err := strconv.ParseInt(route.InAmount, 10, 64)
-	if err != nil {
-		return result, fmt.Errorf("failed to parse in amount: %w", err)
-	}
-	outAmount, err := strconv.ParseInt(route.OutAmount, 10, 64)
-	if err != nil {
-		return result, fmt.Errorf("failed to parse out amount: %w", err)
-	}
-
-	result.InAmount = uint64(inAmount)
-	result.OutAmount = uint64(outAmount)
-
-	return result, nil
 }
