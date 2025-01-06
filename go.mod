@@ -1,4 +1,4 @@
-module github.com/verzth/go-jup-ag
+module github.com/ipanardian/go-jup-ag
 
 go 1.22
 
