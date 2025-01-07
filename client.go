@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -11,7 +12,7 @@ import (
 
 	"github.com/gojek/heimdall/v7"
 	"github.com/gojek/heimdall/v7/httpclient"
-	"github.com/verzth/go-jup-ag/utils"
+	"github.com/ipanardian/go-jup-ag/utils"
 )
 
 type Jupag interface {
@@ -21,6 +22,8 @@ type Jupag interface {
 	Swap(params SwapParams) (string, error)
 	Price(params PriceParams) (PriceMap, error)
 	RoutesMap(onlyDirectRoutes bool) (IndexedRoutesMap, error)
+	BestSwap(params BestSwapParams) (string, error)
+	ExchangeRate(params ExchangeRateParams) (Rate, error)
 }
 
 type JupagImpl struct {
@@ -42,7 +45,7 @@ func NewJupag() Jupag {
 
 	return &JupagImpl{
 		jupagImpl:     cl,
-		apiUrl:        "https://quote-proxy.jup.ag",
+		apiUrl:        "https://api.jup.ag/v2",
 		quotePath:     "/quote",
 		swapPath:      "/swap",
 		pricePath:     "/price",
@@ -50,7 +53,7 @@ func NewJupag() Jupag {
 	}
 }
 
-func (c *JupagImpl) request(method, endpoint string, params, body any) (*http.Response, error) {
+func (c *JupagImpl) request(method, endpoint string, params, payload any) (*http.Response, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, err
@@ -64,17 +67,29 @@ func (c *JupagImpl) request(method, endpoint string, params, body any) (*http.Re
 
 	completeUrl := u.String()
 
-	data, err := json.Marshal(body)
-	if body != nil && err != nil {
-		return nil, err
+	var (
+		req  *http.Request
+		body io.Reader
+	)
+
+	if method != "GET" {
+		data, err := json.Marshal(payload)
+		if payload != nil && err != nil {
+			return nil, err
+		}
+		body = bytes.NewBuffer(data)
 	}
 
-	req, err := http.NewRequest(method, completeUrl, bytes.NewBuffer(data))
+	req, err = http.NewRequest(method, completeUrl, body)
 	if err != nil {
 		return nil, err
 	}
 
 	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Referer", "https://jup.ag/")
+	req.Header.Set("sec-ch-ua-platform", "macOS")
 
 	return c.jupagImpl.Do(req)
 }
@@ -96,24 +111,27 @@ func (c *JupagImpl) parseResponse(resp *http.Response) (json.RawMessage, error) 
 }
 
 // Quote returns a quote for a given input mint, output mint and amount
-func (c *JupagImpl) Quote(params QuoteParams) (quote QuoteResponse, err error) {
+func (c *JupagImpl) Quote(params QuoteParams) (QuoteResponse, error) {
 	resp, err := c.request(http.MethodGet, fmt.Sprintf("%s%s", c.apiUrl, c.quotePath), params, nil)
 	if err != nil {
-		return
+		return nil, fmt.Errorf("failed to make quote request: %w", err)
 	}
 
 	data, err := c.parseResponse(resp)
 	if err != nil {
-		err = fmt.Errorf("failed to parse quote response: %w", err)
-		return
+		return nil, fmt.Errorf("failed to parse quote response: %w", err)
 	}
 
-	if err = json.Unmarshal(data, &quote); err != nil {
-		err = fmt.Errorf("failed to parse quote response: %w", err)
-		return
+	var quotes QuoteResponse
+	if err := json.Unmarshal(data, &quotes); err != nil {
+		return nil, fmt.Errorf("failed to parse quote response: %w", err)
 	}
 
-	return
+	if len(quotes) == 0 {
+		return nil, fmt.Errorf("no quotes returned")
+	}
+
+	return quotes, nil
 }
 
 // Swap returns swap base64 serialized transaction for a route.
@@ -171,4 +189,82 @@ func (c *JupagImpl) RoutesMap(onlyDirectRoutes bool) (IndexedRoutesMap, error) {
 	}
 
 	return routesMap, nil
+}
+
+// BestSwap returns the ebase64 encoded transaction for the best swap route
+// for a given input mint, output mint and amount.
+// Default swap mode: ExactOut, so the amount is the amount of output token.
+// Default wrap unwrap sol: true
+func (c *JupagImpl) BestSwap(params BestSwapParams) (string, error) {
+	if params.SwapMode == "" {
+		params.SwapMode = SwapModeExactIn
+	}
+	routes, err := c.Quote(QuoteParams{
+		InputMint:        params.InputMint,
+		OutputMint:       params.OutputMint,
+		Amount:           params.Amount,
+		FeeBps:           params.FeeAmount,
+		SwapMode:         params.SwapMode,
+		OnlyDirectRoutes: false,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	route, err := routes.GetBestRoute()
+	if err != nil {
+		return "", err
+	}
+
+	swap, err := c.Swap(SwapParams{
+		Route:               route,
+		UserPublicKey:       params.UserPublicKey,
+		DestinationWallet:   params.DestinationPublicKey,
+		FeeAccount:          params.FeeAccount,
+		WrapUnwrapSol:       utils.Pointer(true),
+		AsLegacyTransaction: utils.Pointer(true),
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return swap, nil
+}
+
+// ExchangeRate returns the exchange rate for a given input mint, output mint and amount.
+// Default swap mode: ExactOut, so the amount is the amount of output token.
+func (c *JupagImpl) ExchangeRate(params ExchangeRateParams) (Rate, error) {
+	result := Rate{
+		InputMint:  params.InputMint,
+		OutputMint: params.OutputMint,
+	}
+	routes, err := c.Quote(QuoteParams{
+		InputMint:        params.InputMint,
+		OutputMint:       params.OutputMint,
+		Amount:           params.Amount,
+		SwapMode:         params.SwapMode,
+		OnlyDirectRoutes: false,
+	})
+	if err != nil {
+		return result, err
+	}
+
+	route, err := routes.GetBestRoute()
+	if err != nil {
+		return result, err
+	}
+
+	inAmount, err := strconv.ParseInt(route.InAmount, 10, 64)
+	if err != nil {
+		return result, fmt.Errorf("failed to parse in amount: %w", err)
+	}
+	outAmount, err := strconv.ParseInt(route.OutAmount, 10, 64)
+	if err != nil {
+		return result, fmt.Errorf("failed to parse out amount: %w", err)
+	}
+
+	result.InAmount = uint64(inAmount)
+	result.OutAmount = uint64(outAmount)
+
+	return result, nil
 }

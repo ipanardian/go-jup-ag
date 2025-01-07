@@ -2,6 +2,7 @@ package jupag
 
 import (
 	"encoding/json"
+	"errors"
 	"strconv"
 )
 
@@ -41,26 +42,31 @@ type Fee struct {
 
 // Route is a route object structure.
 type Route struct {
-	Percent  int `json:"percent"`
-	SwapInfo struct {
-		AmmKey     string `json:"ammKey"`
-		FeeAmount  string `json:"feeAmount"`
-		FeeMint    string `json:"feeMint"`
-		InAmount   string `json:"inAmount"`
-		InputMint  string `json:"inputMint"`
-		Label      string `json:"label"`
-		OutAmount  string `json:"outAmount"`
-		OutputMint string `json:"outputMint"`
-	} `json:"swapInfo"`
+	InAmount             string       `json:"inAmount"`
+	OutAmount            string       `json:"outAmount"`
+	PriceImpactPct       float64      `json:"priceImpactPct"`
+	MarketInfos          []MarketInfo `json:"marketInfos"`
+	Amount               string       `json:"amount"`
+	SlippageBps          int64        `json:"slippageBps"`          // minimum: 0, maximum: 10000
+	OtherAmountThreshold string       `json:"otherAmountThreshold"` // The threshold for the swap based on the provided slippage: when swapMode is ExactIn the minimum out amount, when swapMode is ExactOut the maximum in amount
+	SwapMode             string       `json:"swapMode"`
+	Fees                 *struct {
+		SignatureFee             int64   `json:"signatureFee"`             // This inidicate the total amount needed for signing transaction(s). Value in lamports.
+		OpenOrdersDeposits       []int64 `json:"openOrdersDeposits"`       // This inidicate the total amount needed for deposit of serum order account(s). Value in lamports.
+		AtaDeposits              []int64 `json:"ataDeposits"`              // This inidicate the total amount needed for deposit of associative token account(s). Value in lamports.
+		TotalFeeAndDeposits      int64   `json:"totalFeeAndDeposits"`      // This indicate the total lamports needed for fees and deposits above.
+		MinimumSolForTransaction int64   `json:"minimumSOLForTransaction"` // This inidicate the minimum lamports needed for transaction(s). Might be used to create wrapped SOL and will be returned when the wrapped SOL is closed. Also ensures rent exemption of the wallet.
+	} `json:"fees,omitempty"`
 }
 
 // Price is a price object structure.
 type Price struct {
-	ID            string  `json:"id"`            // Address of the token
-	MintSymbol    string  `json:"mintSymbol"`    // Symbol of the token
-	VsToken       string  `json:"vsToken"`       // Address of the token to compare against
-	VsTokenSymbol string  `json:"vsTokenSymbol"` // Symbol of the token to compare against
-	Price         float64 `json:"price"`         // Price of the token in relation to the vsToken. Default to 1 unit of the token worth in USDC if vsToken is not specified.
+	ID            string `json:"id"`            // Address of the token
+	MintSymbol    string `json:"mintSymbol"`    // Symbol of the token
+	VsToken       string `json:"vsToken"`       // Address of the token to compare against
+	VsTokenSymbol string `json:"vsTokenSymbol"` // Symbol of the token to compare against
+	Price         string `json:"price"`         // Price of the token in relation to the vsToken. Default to 1 unit of the token worth in USDC if vsToken is not specified.
+	Type          string `json:"type"`          // Type of price
 }
 
 // PriceMap is a price map objects structure.
@@ -73,28 +79,32 @@ type QuoteParams struct {
 	Amount     uint64 `url:"amount"`     // required
 
 	SwapMode            string `url:"swapMode,omitempty"` // Swap mode, default is ExactIn; Available values : ExactIn, ExactOut.
-	DynamicSlippage     bool   `url:"dynamicSlippage,omitempty"`
+	SlippageBps         uint64 `url:"slippageBps,omitempty"`
+	FeeBps              uint64 `url:"feeBps,omitempty"`              // Fee BPS (only pass in if you want to charge a fee on this swap)
 	OnlyDirectRoutes    bool   `url:"onlyDirectRoutes,omitempty"`    // Only return direct routes (no hoppings and split trade)
 	AsLegacyTransaction bool   `url:"asLegacyTransaction,omitempty"` // Only return routes that can be done in a single legacy transaction. (Routes might be limited)
-	MinimizeSlippage    bool   `url:"minimizeSlippage,omitempty"`
+	UserPublicKey       string `url:"userPublicKey,omitempty"`       // Public key of the user (only pass in if you want deposit and fee being returned, might slow down query)
 }
 
 // QuoteResponse is the response from a quote request.
-type QuoteResponse struct {
-	ContextSlot          int         `json:"contextSlot"`
-	InAmount             string      `json:"inAmount"`
-	InputMint            string      `json:"inputMint"`
-	OtherAmountThreshold string      `json:"otherAmountThreshold"`
-	OutAmount            string      `json:"outAmount"`
-	OutputMint           string      `json:"outputMint"`
-	PlatformFee          interface{} `json:"platformFee"`
-	PriceImpactPct       string      `json:"priceImpactPct"`
-	RoutePlan            Route       `json:"routePlan"`
-	ScoreReport          interface{} `json:"scoreReport"`
-	SlippageBps          int         `json:"slippageBps"`
-	SwapMode             string      `json:"swapMode"`
-	SwapType             string      `json:"swapType"`
-	TimeTaken            float64     `json:"timeTaken"`
+type QuoteResponse []Route
+
+// GetBestRoute returns the best route from a quote response.
+func (q QuoteResponse) GetBestRoute() (Route, error) {
+	if len(q) == 0 {
+		return Route{}, errors.New("no route found")
+	}
+	if len(q) == 1 {
+		return q[0], nil
+	}
+
+	bestRoute := q[0]
+	for _, route := range q {
+		if route.PriceImpactPct < bestRoute.PriceImpactPct {
+			bestRoute = route
+		}
+	}
+	return bestRoute, nil
 }
 
 // SwapParams are the parameters for a swap request.
