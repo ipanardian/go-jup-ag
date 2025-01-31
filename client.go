@@ -45,10 +45,10 @@ func NewJupag() Jupag {
 
 	return &JupagImpl{
 		jupagImpl:     cl,
-		apiUrl:        "https://api.jup.ag/v2",
+		apiUrl:        "https://api.jup.ag",
 		quotePath:     "/quote",
 		swapPath:      "/swap",
-		pricePath:     "/price",
+		pricePath:     "/price/v2",
 		routesMapPath: "/indexed-route-map",
 	}
 }
